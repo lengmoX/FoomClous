@@ -747,7 +747,7 @@ async function downloadAndSaveFile(
         writeStream.end();
 
         await new Promise<void>((resolve, reject) => {
-            writeStream.on('finish', resolve); S
+            writeStream.on('finish', resolve);
             writeStream.on('error', reject);
         });
 
