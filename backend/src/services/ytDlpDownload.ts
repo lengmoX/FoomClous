@@ -94,6 +94,7 @@ async function runYtDlpDownload(url: string, taskDir: string): Promise<void> {
         'mp4',
         '-o',
         outputTemplate,
+        '--',
         url,
     ];
 

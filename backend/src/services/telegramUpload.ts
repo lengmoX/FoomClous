@@ -938,13 +938,15 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
         queuePending: 0
     });
 
-    const targetDir = path.join(UPLOAD_DIR, folderName);
+    // 路径穿越防御：清理文件夹名称
+    const sanitizedFolderName = sanitizeFilename(folderName);
+    const targetDir = path.join(UPLOAD_DIR, sanitizedFolderName);
     if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true });
     }
 
     // 更新队列中所有文件的目标路径
-    queue.folderName = folderName;
+    queue.folderName = sanitizedFolderName;
     for (const file of queue.files) {
         file.targetDir = targetDir;
     }
