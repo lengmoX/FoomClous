@@ -30,10 +30,7 @@ router.get('/', async (_req: Request, res: Response) => {
 
         const result = await query(queryStr, params);
 
-        // 过滤掉文件夹占位符文件
-        const filteredRows = result.rows.filter((f: any) => f.name !== '.folder');
-
-        const files = filteredRows.map(file => ({
+        const files = result.rows.map(file => ({
             ...file,
             size: formatFileSize(file.size),
             date: formatRelativeTime(file.created_at),
