@@ -314,15 +314,31 @@ export class WebDAVStorageProvider implements IStorageProvider {
         });
     }
 
-    async saveFile(tempPath: string, fileName: string): Promise<string> {
+    async saveFile(tempPath: string, fileName: string, _mimeType: string): Promise<string> {
+        let fileStream: fs.ReadStream | null = null;
+
         try {
-            const fileBuffer = fs.readFileSync(tempPath);
-            await this.client.putFileContents(`/${fileName}`, fileBuffer);
+            const stat = await fs.promises.stat(tempPath);
+            const fileSize = stat.size;
+
+            console.log('[WebDAV] Starting streaming upload:', fileName, `(${fileSize} bytes)`);
+
+            fileStream = fs.createReadStream(tempPath);
+
+            await this.client.putFileContents(`/${fileName}`, fileStream, {
+                contentLength: fileSize,
+                overwrite: true
+            });
+
             console.log('[WebDAV] Upload successful:', fileName);
             return fileName;
         } catch (error: any) {
             console.error('[WebDAV] Upload failed:', error.message);
             throw new Error(`WebDAV upload failed: ${error.message}`);
+        } finally {
+            if (fileStream && !fileStream.destroyed) {
+                fileStream.destroy();
+            }
         }
     }
 

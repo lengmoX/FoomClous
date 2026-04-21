@@ -343,15 +343,26 @@ var init_storage = __esm({
       }
       name = "webdav";
       client;
-      async saveFile(tempPath, fileName) {
+      async saveFile(tempPath, fileName, _mimeType) {
+        let fileStream = null;
         try {
-          const fileBuffer = fs2.readFileSync(tempPath);
-          await this.client.putFileContents(`/${fileName}`, fileBuffer);
+          const stat = await fs2.promises.stat(tempPath);
+          const fileSize = stat.size;
+          console.log("[WebDAV] Starting streaming upload:", fileName, `(${fileSize} bytes)`);
+          fileStream = fs2.createReadStream(tempPath);
+          await this.client.putFileContents(`/${fileName}`, fileStream, {
+            contentLength: fileSize,
+            overwrite: true
+          });
           console.log("[WebDAV] Upload successful:", fileName);
           return fileName;
         } catch (error) {
           console.error("[WebDAV] Upload failed:", error.message);
           throw new Error(`WebDAV upload failed: ${error.message}`);
+        } finally {
+          if (fileStream && !fileStream.destroyed) {
+            fileStream.destroy();
+          }
         }
       }
       async getFileStream(storedPath) {
@@ -480,30 +491,40 @@ var init_storage = __esm({
        */
       async ensureFolderExists(token) {
         try {
-          await axios.get(
-            `https://graph.microsoft.com/v1.0/me/drive/root:/${this.ONEDRIVE_FOLDER}`,
-            { headers: { "Authorization": `Bearer ${token}` } }
-          );
+          const endpoint = `https://graph.microsoft.com/v1.0/me/drive/root:/${encodeURIComponent(this.ONEDRIVE_FOLDER)}:`;
+          await axios.get(endpoint, {
+            headers: { "Authorization": `Bearer ${token}` },
+            timeout: 3e4
+          });
         } catch (error) {
           if (error.response?.status === 404) {
             console.log("[OneDrive] Creating storage folder:", this.ONEDRIVE_FOLDER);
-            await axios.post(
-              `https://graph.microsoft.com/v1.0/me/drive/root/children`,
-              {
-                name: this.ONEDRIVE_FOLDER,
-                folder: {},
-                "@microsoft.graph.conflictBehavior": "fail"
-              },
-              {
-                headers: {
-                  "Authorization": `Bearer ${token}`,
-                  "Content-Type": "application/json"
+            try {
+              await axios.post(
+                `https://graph.microsoft.com/v1.0/me/drive/root/children`,
+                {
+                  name: this.ONEDRIVE_FOLDER,
+                  folder: {},
+                  "@microsoft.graph.conflictBehavior": "fail"
+                },
+                {
+                  headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                  },
+                  timeout: 3e4
                 }
-              }
-            );
-            console.log("[OneDrive] Storage folder created successfully");
+              );
+              console.log("[OneDrive] Storage folder created successfully");
+            } catch (postError) {
+              const errorDetails = postError.response?.data?.error || postError.message;
+              console.error("[OneDrive] Create folder failed:", errorDetails);
+              throw new Error(`OneDrive failed to create folder: ${JSON.stringify(errorDetails)}`);
+            }
           } else {
-            throw error;
+            const errorDetails = error.response?.data?.error || error.message;
+            console.error("[OneDrive] Check folder failed:", errorDetails);
+            throw new Error(`OneDrive folder check failed (Status ${error.response?.status}): ${JSON.stringify(errorDetails)}`);
           }
         }
       }
@@ -1083,7 +1104,10 @@ var init_storage = __esm({
             console.log("[StorageManager] Legacy config migrated successfully.");
           } else {
             accountId = existing.rows[0].id;
+            console.log("[StorageManager] Legacy config already migrated, account ID:", accountId);
           }
+          console.log("[StorageManager] Cleaning up legacy settings...");
+          await query("DELETE FROM system_settings WHERE key IN ('onedrive_client_id', 'onedrive_client_secret', 'onedrive_refresh_token', 'onedrive_tenant_id')");
           const updateRes = await query(
             "UPDATE files SET storage_account_id = $1 WHERE source = $2 AND storage_account_id IS NULL",
             [accountId, "onedrive"]
@@ -1234,7 +1258,8 @@ var init_storage = __esm({
           const pendingName = await this.getSetting("onedrive_pending_name");
           const finalName = name || pendingName || "OneDrive Account";
           await this.addOneDriveAccount(finalName, clientId, clientSecret, refreshToken, tenantId);
-          await query("DELETE FROM system_settings WHERE key = 'onedrive_pending_name'");
+          console.log("[StorageManager] Cleaning up temporary settings after successful account add/update...");
+          await query("DELETE FROM system_settings WHERE key IN ('onedrive_client_id', 'onedrive_client_secret', 'onedrive_refresh_token', 'onedrive_tenant_id', 'onedrive_pending_name')");
           const res = await query("SELECT id FROM storage_accounts WHERE type = $1 ORDER BY created_at DESC LIMIT 1", ["onedrive"]);
           if (res.rows[0]) {
             await this.switchAccount(res.rows[0].id);
@@ -1254,17 +1279,17 @@ var init_storage = __esm({
 import express from "express";
 import cors from "cors";
 import dotenv3 from "dotenv";
-import path13 from "path";
+import path14 from "path";
 import fs12 from "fs";
 
 // src/routes/files.ts
 init_db();
 import { Router as Router2 } from "express";
 import fs9 from "fs";
-import path9 from "path";
+import path10 from "path";
 
 // src/middleware/signedUrl.ts
-import crypto4 from "crypto";
+import crypto6 from "crypto";
 
 // src/utils/config.ts
 import crypto from "crypto";
@@ -1276,7 +1301,7 @@ var TOKEN_EXPIRY = 7 * 24 * 60 * 60 * 1e3;
 
 // src/routes/auth.ts
 import { Router } from "express";
-import crypto3 from "crypto";
+import crypto5 from "crypto";
 import { rateLimit } from "express-rate-limit";
 
 // src/utils/security.ts
@@ -1381,7 +1406,7 @@ import { StringSession } from "telegram/sessions/index.js";
 import { NewMessage } from "telegram/events/index.js";
 import { Raw } from "telegram/events/index.js";
 import fs8 from "fs";
-import path8 from "path";
+import path9 from "path";
 
 // src/services/telegramState.ts
 init_db();
@@ -1952,7 +1977,6 @@ function buildSilentModeNotice(fileCount) {
   return [
     `\u{1F910} **\u5DF2\u5207\u6362\u5230\u9759\u9ED8\u6A21\u5F0F**`,
     ``,
-    `\u5F53\u524D\u4E0B\u8F7D\u6587\u4EF6\u6570: ${fileCount} \u4E2A`,
     `Bot \u5C06\u5728\u540E\u53F0\u7EE7\u7EED\u5904\u7406\u6240\u6709\u6587\u4EF6\uFF0C\u8BF7\u8010\u5FC3\u7B49\u5F85\u3002`,
     ``,
     `\u{1F4A1} \u53D1\u9001 /tasks \u67E5\u770B\u5B9E\u65F6\u4EFB\u52A1\u72B6\u6001`
@@ -2170,21 +2194,22 @@ function buildCleanupNotice(deletedCount, freedSpace) {
 init_db();
 import { Api } from "telegram";
 import fs5 from "fs";
-import path6 from "path";
-import { v4 as uuidv4 } from "uuid";
+import path7 from "path";
+import crypto4 from "crypto";
 
 // src/utils/thumbnail.ts
 import path5 from "path";
 import sharp from "sharp";
 import ffmpeg from "fluent-ffmpeg";
 import fs4 from "fs";
+import crypto3 from "crypto";
 var THUMBNAIL_DIR2 = path5.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
 if (!fs4.existsSync(THUMBNAIL_DIR2)) {
   fs4.mkdirSync(THUMBNAIL_DIR2, { recursive: true });
 }
 async function generateThumbnail(filePath, storedName, mimeType) {
   const absFilePath = path5.resolve(filePath);
-  const thumbName = `thumb_${path5.parse(storedName).name}.webp`;
+  const thumbName = `thumb_${crypto3.randomUUID()}.webp`;
   const thumbPath = path5.join(THUMBNAIL_DIR2, thumbName);
   console.log(`[Thumbnail] \u{1F680} Starting generation for: ${storedName}`);
   console.log(`[Thumbnail] Source: ${absFilePath}`);
@@ -2278,6 +2303,40 @@ async function getImageDimensions(filePath, mimeType) {
 
 // src/services/telegramUpload.ts
 init_storage();
+
+// src/utils/fileUtils.ts
+init_db();
+import path6 from "path";
+async function getUniqueStoredName(originalName, folder = null, storageAccountId = null) {
+  const sanitizedName = sanitizeFilename(originalName);
+  const ext = path6.extname(sanitizedName);
+  const baseName = ext ? sanitizedName.slice(0, -ext.length) : sanitizedName;
+  let currentName = sanitizedName;
+  let counter = 1;
+  let exists = true;
+  while (exists) {
+    let checkQuery = "";
+    let params = [];
+    if (storageAccountId) {
+      checkQuery = "SELECT COUNT(*)::int as cnt FROM files WHERE stored_name = $1 AND storage_account_id = $2";
+      params = [currentName, storageAccountId];
+    } else {
+      checkQuery = "SELECT COUNT(*)::int as cnt FROM files WHERE stored_name = $1 AND source = 'local'";
+      params = [currentName];
+    }
+    const result = await query(checkQuery, params);
+    const count = result.rows[0]?.cnt || 0;
+    if (count === 0) {
+      exists = false;
+    } else {
+      currentName = `${baseName} (${counter})${ext}`;
+      counter++;
+    }
+  }
+  return currentName;
+}
+
+// src/services/telegramUpload.ts
 var UPLOAD_DIR2 = process.env.UPLOAD_DIR || "./data/uploads";
 var floodWaitUntil = 0;
 async function safeEditMessage(client2, chatId, params) {
@@ -2304,51 +2363,48 @@ async function ensureSilentNotice(client2, chatId, fileCount, replyToMsg) {
   const chatIdStr = chatId.toString();
   const silentSessionActive = silentSessionMap.has(chatIdStr);
   if (!silentSessionActive) return;
+  const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
+  if (silentMsgId) {
+    if (!replyToMsg) return;
+    try {
+      await client2.deleteMessages(chatId, [silentMsgId], { revoke: true });
+    } catch (e) {
+    }
+    silentNoticeMessageIdMap.delete(chatIdStr);
+  }
   if (silentNoticePromiseMap.has(chatIdStr)) {
     try {
       await silentNoticePromiseMap.get(chatIdStr);
     } catch (e) {
     }
+    if (silentNoticeMessageIdMap.get(chatIdStr)) return;
   }
-  const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
-  const now = Date.now();
-  const lastTime = lastSilentNotificationTimeMap.get(chatIdStr) || 0;
-  if (now - lastTime > SILENT_NOTIFICATION_COOLDOWN || !silentMsgId) {
-    lastSilentNotificationTimeMap.set(chatIdStr, now);
-    const text = buildSilentModeNotice(fileCount);
-    const sendPromise = (async () => {
-      let sMsg;
-      if (replyToMsg) {
-        sMsg = await safeReply(replyToMsg, { message: text });
-      }
-      if (!sMsg) {
-        try {
-          sMsg = await client2.sendMessage(chatId, { message: text });
-        } catch (e) {
-          console.error(`[TG][silent] notice-send-failed chat=${chatIdStr}:`, e);
-        }
-      }
-      if (sMsg) {
-        silentNoticeMessageIdMap.set(chatIdStr, sMsg.id);
-        console.log(`[TG][silent] notice-sent chat=${chatIdStr} msg=${sMsg.id}`);
-      }
-      return sMsg;
-    })();
-    silentNoticePromiseMap.set(chatIdStr, sendPromise);
-    try {
-      await sendPromise;
-    } finally {
-      if (silentNoticePromiseMap.get(chatIdStr) === sendPromise) {
-        silentNoticePromiseMap.delete(chatIdStr);
+  const text = buildSilentModeNotice(fileCount);
+  const sendPromise = (async () => {
+    let sMsg;
+    if (replyToMsg) {
+      sMsg = await safeReply(replyToMsg, { message: text });
+    }
+    if (!sMsg) {
+      try {
+        sMsg = await client2.sendMessage(chatId, { message: text });
+      } catch (e) {
+        console.error(`[TG][silent] notice-send-failed chat=${chatIdStr}:`, e);
       }
     }
-    return;
-  }
-  if (silentMsgId) {
-    await safeEditMessage(client2, chatId, {
-      message: silentMsgId,
-      text: buildSilentModeNotice(fileCount)
-    });
+    if (sMsg) {
+      silentNoticeMessageIdMap.set(chatIdStr, sMsg.id);
+      console.log(`[TG][silent] notice-sent chat=${chatIdStr} msg=${sMsg.id}`);
+    }
+    return sMsg;
+  })();
+  silentNoticePromiseMap.set(chatIdStr, sendPromise);
+  try {
+    await sendPromise;
+  } finally {
+    if (silentNoticePromiseMap.get(chatIdStr) === sendPromise) {
+      silentNoticePromiseMap.delete(chatIdStr);
+    }
   }
 }
 async function safeReply(message, params) {
@@ -2379,7 +2435,7 @@ var BetterDownloadQueue = class {
   maxConcurrent = 2;
   // 用户要求并发限制为 2
   async add(fileName, execute, totalSize = 0) {
-    const id = uuidv4();
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     return new Promise((resolve, reject) => {
       const task = {
         id,
@@ -2450,7 +2506,6 @@ var BetterDownloadQueue = class {
 var downloadQueue = new BetterDownloadQueue();
 var statusActionLocks = /* @__PURE__ */ new Map();
 var lastSilentNotificationTimeMap = /* @__PURE__ */ new Map();
-var SILENT_NOTIFICATION_COOLDOWN = 3e4;
 async function runStatusAction(chatId, action) {
   if (!chatId) return;
   const chatIdStr = chatId.toString();
@@ -2498,12 +2553,12 @@ async function finalizeSilentSessionIfDone(client2, chatId) {
   console.log(`[TG][silent] finalized chat=${chatIdStr} failed=${s?.failed || 0}`);
 }
 function getBackgroundFileCount(chatIdStr) {
-  const queueStats = downloadQueue.getStats();
-  const trackedFiles = getActiveUploadCount(chatIdStr);
+  const files = getConsolidatedFiles(chatIdStr);
+  const activeFilesCount = files.filter((f) => f.phase !== "success" && f.phase !== "failed").length;
   const batches = getConsolidatedBatches(chatIdStr);
-  const batchFiles = batches.reduce((sum, b) => sum + b.totalFiles, 0);
-  const count = Math.max(queueStats.total, trackedFiles + batchFiles);
-  const logLine = `[TG][silent][${Date.now()}] fileCount: queue=${queueStats.total}(a=${queueStats.active},p=${queueStats.pending}) tracked=${trackedFiles}+${batchFiles} => ${count}
+  const activeBatchFiles = batches.filter((b) => b.completed < b.totalFiles).reduce((sum, b) => sum + (b.totalFiles - b.completed), 0);
+  const count = activeFilesCount + activeBatchFiles;
+  const logLine = `[TG][silent][${Date.now()}] fileCount chat=${chatIdStr}: activeFiles=${activeFilesCount} activeBatchFiles=${activeBatchFiles} => total=${count}
 `;
   console.log(logLine.trim());
   try {
@@ -2639,6 +2694,14 @@ function getOutstandingTaskCount(chatIdStr) {
 }
 async function checkAndResetSession(client2, chatId) {
   const chatIdStr = chatId.toString();
+  const outstanding = getOutstandingTaskCount(chatIdStr);
+  if (outstanding === 0 && silentSessionMap.has(chatIdStr)) {
+    silentSessionMap.delete(chatIdStr);
+    silentNoticeMessageIdMap.delete(chatIdStr);
+    lastSilentNotificationTimeMap.delete(chatIdStr);
+    console.log(`[TG][silent] Auto-cleared zombie session for ${chatIdStr}`);
+    return;
+  }
   if (silentSessionMap.has(chatIdStr)) {
     if (process.env.TG_STATUS_DEBUG === "1") {
       console.log(`[TG][status] reset-skip chat=${chatIdStr} reason=silentSession`);
@@ -2713,39 +2776,41 @@ function extractFileInfo(message) {
     if (message.document) {
       const doc = message.document;
       const fileNameAttr = doc.attributes?.find((a) => a.className === "DocumentAttributeFilename");
-      fileName = fileNameAttr?.fileName || `file_${Date.now()}`;
+      fileName = fileNameAttr?.fileName || `file_${message.id}`;
       mimeType = doc.mimeType || getMimeTypeFromFilename(fileName);
       if (fileName.startsWith("file_")) {
         const videoAttr = doc.attributes?.find((a) => a.className === "DocumentAttributeVideo");
         const audioAttr = doc.attributes?.find((a) => a.className === "DocumentAttributeAudio");
-        if (videoAttr) fileName = `video_${Date.now()}.mp4`;
-        else if (audioAttr) fileName = `audio_${Date.now()}.mp3`;
+        if (videoAttr) fileName = `video_${message.id}.mp4`;
+        else if (audioAttr) fileName = `audio_${message.id}.mp3`;
       }
     } else if (message.photo) {
-      fileName = `photo_${Date.now()}.jpg`;
+      const date = /* @__PURE__ */ new Date();
+      const timestamp = date.toISOString().replace(/[-:T]/g, "").slice(0, 14);
+      fileName = `Img_${timestamp}.jpg`;
       mimeType = "image/jpeg";
     } else if (message.video) {
       const video = message.video;
       const fileNameAttr = video.attributes?.find((a) => a.className === "DocumentAttributeFilename");
-      fileName = fileNameAttr?.fileName || `video_${Date.now()}.mp4`;
+      fileName = fileNameAttr?.fileName || `video_${message.id}.mp4`;
       mimeType = video.mimeType || "video/mp4";
     } else if (message.audio) {
       const audio = message.audio;
       const fileNameAttr = audio.attributes?.find((a) => a.className === "DocumentAttributeFilename");
-      fileName = fileNameAttr?.fileName || `audio_${Date.now()}.mp3`;
+      fileName = fileNameAttr?.fileName || `audio_${message.id}.mp3`;
       mimeType = audio.mimeType || "audio/mpeg";
     } else if (message.voice) {
-      fileName = `voice_${Date.now()}.ogg`;
+      fileName = `voice_${message.id}.ogg`;
       mimeType = "audio/ogg";
     } else if (message.sticker) {
-      fileName = `sticker_${Date.now()}.webp`;
+      fileName = `sticker_${message.id}.webp`;
       mimeType = "image/webp";
     } else {
       const media = message.media;
       if (media.document && media.document instanceof Api.Document) {
         const doc = media.document;
         const fileNameAttr = doc.attributes?.find((a) => a.className === "DocumentAttributeFilename");
-        fileName = fileNameAttr?.fileName || `file_${Date.now()}`;
+        fileName = fileNameAttr?.fileName || `file_${message.id}`;
         mimeType = doc.mimeType || getMimeTypeFromFilename(fileName);
       } else {
         return null;
@@ -2757,9 +2822,9 @@ function extractFileInfo(message) {
   }
   return { fileName: sanitizeFilename(fileName), mimeType };
 }
-async function downloadAndSaveFile(client2, message, fileName, targetDir, onProgress) {
-  const ext = path6.extname(fileName) || "";
-  const storedName = `${uuidv4()}${ext}`;
+async function downloadAndSaveFile(client2, message, originalFileName, targetDir, onProgress) {
+  const ext = path7.extname(originalFileName) || "";
+  const tempStoredName = `${crypto4.randomUUID()}${ext}`;
   let saveDir = targetDir || UPLOAD_DIR2;
   if (!fs5.existsSync(saveDir)) {
     try {
@@ -2770,7 +2835,7 @@ async function downloadAndSaveFile(client2, message, fileName, targetDir, onProg
       saveDir = UPLOAD_DIR2;
     }
   }
-  const filePath = path6.join(saveDir, storedName);
+  const filePath = path7.join(saveDir, tempStoredName);
   const totalSize = getEstimatedFileSize(message);
   let downloadedSize = 0;
   try {
@@ -2791,7 +2856,7 @@ async function downloadAndSaveFile(client2, message, fileName, targetDir, onProg
       writeStream.on("error", reject);
     });
     const stats = fs5.statSync(filePath);
-    return { filePath, actualSize: stats.size, storedName };
+    return { filePath, actualSize: stats.size, tempStoredName };
   } catch (error) {
     console.error("\u{1F916} \u4E0B\u8F7D\u6587\u4EF6\u5931\u8D25:", error);
     if (fs5.existsSync(filePath)) {
@@ -2807,13 +2872,14 @@ async function processFileUpload(client2, file, queue) {
     let storedName;
     try {
       const targetDir = file.targetDir || UPLOAD_DIR2;
-      const result = await downloadAndSaveFile(client2, file.message, file.fileName, targetDir);
+      const activeAccountId = storageManager.getActiveAccountId();
+      storedName = await getUniqueStoredName(file.fileName, queue?.folderName || null, activeAccountId);
+      const result = await downloadAndSaveFile(client2, file.message, file.fileName, file.targetDir);
       if (!result) {
         file.error = "\u4E0B\u8F7D\u5931\u8D25";
         return false;
       }
       localFilePath = result.filePath;
-      storedName = result.storedName;
       const actualSize = result.actualSize;
       const fileType = getFileType(file.mimeType);
       let thumbnailPath = null;
@@ -2839,7 +2905,6 @@ async function processFileUpload(client2, file, queue) {
         }
       }
       const folderName = queue?.folderName || null;
-      const activeAccountId = storageManager.getActiveAccountId();
       await query(`
                 INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -2909,7 +2974,7 @@ async function processBatchUpload(client2, mediaGroupId) {
   const chatId = queue.chatId;
   const batchId = mediaGroupId;
   if (!folderName) {
-    folderName = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+    folderName = mediaGroupId;
   }
   await checkAndResetSession(client2, chatId);
   registerBatch(chatId.toString(), batchId, {
@@ -2922,11 +2987,12 @@ async function processBatchUpload(client2, mediaGroupId) {
     providerName: storageManager.getProvider().name,
     queuePending: 0
   });
-  const targetDir = path6.join(UPLOAD_DIR2, folderName);
+  const sanitizedFolderName = sanitizeFilename(folderName);
+  const targetDir = path7.join(UPLOAD_DIR2, sanitizedFolderName);
   if (!fs5.existsSync(targetDir)) {
     fs5.mkdirSync(targetDir, { recursive: true });
   }
-  queue.folderName = folderName;
+  queue.folderName = sanitizedFolderName;
   for (const file of queue.files) {
     file.targetDir = targetDir;
   }
@@ -2961,7 +3027,15 @@ async function processBatchUpload(client2, mediaGroupId) {
     await onBatchProgress();
   }, 3e3);
   try {
-    await Promise.all(queue.files.map((file) => processFileUpload(client2, file, queue)));
+    await Promise.all(queue.files.map((file, index) => {
+      const ext = path7.extname(file.fileName);
+      const baseName = queue.folderName || "file";
+      const isDefaultFolder = /^[0-9-]+$/.test(baseName);
+      if (!isDefaultFolder) {
+        file.fileName = `${baseName}_${index + 1}${ext}`;
+      }
+      return processFileUpload(client2, file, queue);
+    }));
     await onBatchProgress();
   } finally {
     clearInterval(statusUpdater);
@@ -3057,9 +3131,10 @@ async function handleFileUpload(client2, event) {
     let finalFileName = fileName;
     const caption = message.message || "";
     if (caption && caption.trim()) {
-      const ext = path6.extname(fileName);
-      const sanitizedCaption = sanitizeFilename(caption.trim());
-      if (!sanitizedCaption.toLowerCase().endsWith(ext.toLowerCase()) && ext) {
+      const ext = path7.extname(fileName);
+      const firstLine = caption.split(/\r?\n/)[0].trim();
+      const sanitizedCaption = sanitizeFilename(firstLine);
+      if (ext && !sanitizedCaption.toLowerCase().endsWith(ext.toLowerCase())) {
         finalFileName = `${sanitizedCaption}${ext}`;
       } else {
         finalFileName = sanitizedCaption;
@@ -3098,8 +3173,7 @@ async function handleFileUpload(client2, event) {
       });
     }
     const stats = downloadQueue.getStats();
-    const isSilent = silentSessionMap.has(chatIdStr);
-    if (!useConsolidated() && statusMsg && (stats.active >= 2 || stats.pending > 0) && !isSilent) {
+    if (!useConsolidated() && statusMsg && (stats.active >= 2 || stats.pending > 0) && !silentSessionMap.has(chatIdStr)) {
       await runStatusAction(chatId, async () => {
         await safeEditMessage(client2, chatId, {
           message: statusMsg.id,
@@ -3108,15 +3182,12 @@ async function handleFileUpload(client2, event) {
       });
     }
     let lastUpdateTime = 0;
-    const updateInterval = 3e3;
     const onProgress = async (downloaded, total) => {
       const now = Date.now();
-      if (now - lastUpdateTime < updateInterval) return;
+      if (now - lastUpdateTime < 3e3) return;
       lastUpdateTime = now;
-      updateUploadPhase(chatId.toString(), uploadId, { phase: "downloading", downloaded, total });
-      if (silentSessionMap.has(chatIdStr)) {
-        return;
-      }
+      updateUploadPhase(chatIdStr, uploadId, { phase: "downloading", downloaded, total });
+      if (silentSessionMap.has(chatIdStr)) return;
       if (useConsolidated()) {
         await runStatusAction(chatId, async () => {
           await refreshConsolidatedMessage(client2, chatId);
@@ -3137,6 +3208,8 @@ async function handleFileUpload(client2, event) {
     const attemptSingleUpload = async () => {
       let localFilePath;
       try {
+        const activeAccountId = storageManager.getActiveAccountId();
+        const storedName = await getUniqueStoredName(finalFileName, null, activeAccountId);
         const result = await downloadAndSaveFile(client2, message, fileName, void 0, onProgress);
         if (!result) {
           lastError = "\u4E0B\u8F7D\u5931\u8D25";
@@ -3144,9 +3217,9 @@ async function handleFileUpload(client2, event) {
         }
         localFilePath = result.filePath;
         lastLocalPath = localFilePath;
-        const { actualSize, storedName } = result;
+        const { actualSize } = result;
         const fileType = getFileType(mimeType);
-        updateUploadPhase(chatId.toString(), uploadId, { phase: "saving" });
+        updateUploadPhase(chatIdStr, uploadId, { phase: "saving" });
         if (useConsolidated()) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
@@ -3181,12 +3254,11 @@ async function handleFileUpload(client2, event) {
             throw err;
           }
         }
-        const activeAccountId = storageManager.getActiveAccountId();
         await query(`
                     INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 `, [finalFileName, storedName, fileType, mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, null, activeAccountId]);
-        updateUploadPhase(chatId.toString(), uploadId, { phase: "success", size: actualSize, providerName: provider.name, fileType });
+        updateUploadPhase(chatIdStr, uploadId, { phase: "success", size: actualSize, providerName: provider.name, fileType });
         if (useConsolidated()) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
@@ -3223,7 +3295,7 @@ async function handleFileUpload(client2, event) {
           }
         }
         lastLocalPath = void 0;
-        updateUploadPhase(chatId.toString(), uploadId, { phase: "retrying" });
+        updateUploadPhase(chatIdStr, uploadId, { phase: "retrying" });
         if (useConsolidated()) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
@@ -3420,9 +3492,8 @@ async function handleTasks(message) {
 init_db();
 init_storage();
 import fs7 from "fs";
-import path7 from "path";
+import path8 from "path";
 import { spawn } from "child_process";
-import { v4 as uuidv42 } from "uuid";
 import os2 from "os";
 var YtDlpQueue = class {
   constructor(maxConcurrent) {
@@ -3466,7 +3537,7 @@ function selectPrimaryOutputFile(taskDir) {
   const entries = fs7.readdirSync(taskDir, { withFileTypes: true });
   const files = entries.filter((e) => e.isFile()).map((e) => ({
     name: e.name,
-    fullPath: path7.join(taskDir, e.name)
+    fullPath: path8.join(taskDir, e.name)
   })).filter((f) => !f.name.endsWith(".part") && !f.name.endsWith(".ytdl") && !f.name.endsWith(".json") && !f.name.endsWith(".tmp")).map((f) => ({
     ...f,
     size: fs7.existsSync(f.fullPath) ? fs7.statSync(f.fullPath).size : 0
@@ -3476,7 +3547,7 @@ function selectPrimaryOutputFile(taskDir) {
 }
 async function runYtDlpDownload(url, taskDir) {
   ensureDir(taskDir);
-  const outputTemplate = path7.join(taskDir, "%(title).200s-%(id)s.%(ext)s");
+  const outputTemplate = path8.join(taskDir, "%(title).200s-%(id)s.%(ext)s");
   const args = [
     "--no-playlist",
     "--newline",
@@ -3484,6 +3555,7 @@ async function runYtDlpDownload(url, taskDir) {
     "mp4",
     "-o",
     outputTemplate,
+    "--",
     url
   ];
   await new Promise((resolve, reject) => {
@@ -3516,8 +3588,8 @@ async function uploadDownloadedFile(localFilePath, originalFileName) {
   const provider = storageManager.getProvider();
   const activeAccountId = storageManager.getActiveAccountId();
   const safeName = sanitizeFilename(originalFileName);
-  const ext = path7.extname(safeName) || path7.extname(localFilePath) || "";
-  const storedName = `${uuidv42()}${ext}`;
+  const ext = path8.extname(safeName) || path8.extname(localFilePath) || "";
+  const storedName = await getUniqueStoredName(safeName, "ytdlp", activeAccountId);
   const mimeType = getMimeTypeFromFilename(safeName);
   const fileType = getFileType(mimeType);
   const stats = await fs7.promises.stat(localFilePath);
@@ -3546,14 +3618,14 @@ async function uploadDownloadedFile(localFilePath, originalFileName) {
 }
 async function handleYtDlpCommand(message, url) {
   const task = {
-    id: uuidv42(),
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     url,
     status: "pending",
     createdAt: Date.now()
   };
-  const workBaseDir = path7.isAbsolute(YTDLP_WORK_DIR) ? YTDLP_WORK_DIR : path7.join(process.cwd(), YTDLP_WORK_DIR);
+  const workBaseDir = path8.isAbsolute(YTDLP_WORK_DIR) ? YTDLP_WORK_DIR : path8.join(process.cwd(), YTDLP_WORK_DIR);
   ensureDir(workBaseDir);
-  const taskDir = path7.join(workBaseDir, task.id);
+  const taskDir = path8.join(workBaseDir, task.id);
   await message.reply({ message: `\u23EC \u5F00\u59CB\u89E3\u6790\u5E76\u4E0B\u8F7D...
 Task: ${task.id}` });
   ytDlpQueue.add(async () => {
@@ -3765,7 +3837,7 @@ async function initTelegramBot() {
     console.error("\u{1F916} Telegram Bot \u540C\u6B65\u5B58\u50A8\u914D\u7F6E\u5931\u8D25:", e);
   }
   try {
-    const sessionDir = path8.dirname(SESSION_FILE);
+    const sessionDir = path9.dirname(SESSION_FILE);
     if (!fs8.existsSync(sessionDir)) {
       fs8.mkdirSync(sessionDir, { recursive: true });
     }
@@ -3844,6 +3916,11 @@ async function initTelegramBot() {
         if (!message.text && !message.media) return;
         const senderId = message.senderId?.toJSNumber();
         if (!senderId) return;
+        const messageAge = Date.now() / 1e3 - message.date;
+        if (messageAge > 300) {
+          console.log(`\u{1F916} \u8DF3\u8FC7\u8FC7\u65E7\u6D88\u606F (${Math.round(messageAge)}s ago, id=${message.id})`);
+          return;
+        }
         const text = message.text || "";
         const chatId = message.chatId;
         if (!chatId) return;
@@ -3863,7 +3940,7 @@ async function initTelegramBot() {
             const qrDataUrl = await generateOTPAuthUrl();
             const base64Data = qrDataUrl.replace(/^data:image\/png;base64,/, "");
             const buffer = Buffer.from(base64Data, "base64");
-            const tempPath = path8.join(process.cwd(), `temp_qr_${chatId}.png`);
+            const tempPath = path9.join(process.cwd(), `temp_qr_${chatId}.png`);
             fs8.writeFileSync(tempPath, buffer);
             const qrMessage = await client.sendFile(chatId, {
               file: tempPath,
@@ -4040,8 +4117,10 @@ async function sendLoginNotification(req) {
   const ip = getClientIP(req);
   const ua = new UAParser(req.headers["user-agent"]).getResult();
   const location = await getIPLocation(ip);
-  const now = /* @__PURE__ */ new Date();
-  const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1e3).toISOString().replace(/T/, " ").replace(/\..+/, "") + " (CST)";
+  const beijingTime = (/* @__PURE__ */ new Date()).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour12: false
+  }).replace(/\//g, "-") + " (\u4E2D\u56FD/\u4E0A\u6D77)";
   const message = `\u{1F514} **\u5B89\u5168\u767B\u5F55\u63D0\u793A**
 
 \u{1F464} **\u8D26\u53F7**: \u7BA1\u7406\u5458
@@ -4064,10 +4143,10 @@ setInterval(() => {
   });
 }, 60 * 60 * 1e3);
 function hashPassword(password) {
-  return crypto3.createHash("sha256").update(password).digest("hex");
+  return crypto5.createHash("sha256").update(password).digest("hex");
 }
 function generateToken() {
-  return crypto3.randomBytes(32).toString("hex");
+  return crypto5.randomBytes(32).toString("hex");
 }
 function verifyPassword2(password) {
   if (!ACCESS_PASSWORD_HASH) {
@@ -4228,7 +4307,7 @@ var auth_default = router;
 // src/middleware/signedUrl.ts
 function generateSignature(fileId, expires) {
   const data = `${fileId}:${expires}:${SESSION_SECRET}`;
-  return crypto4.createHash("sha256").update(data).digest("hex");
+  return crypto6.createHash("sha256").update(data).digest("hex");
 }
 function getSignedUrl(fileId, type, expiresIn = 24 * 60 * 60) {
   const expires = Date.now() + expiresIn * 1e3;
@@ -4278,8 +4357,8 @@ function requireAuthOrSignedUrl(req, res, next) {
 
 // src/routes/files.ts
 var router2 = Router2();
-var UPLOAD_DIR3 = path9.resolve(process.env.UPLOAD_DIR || "./data/uploads");
-var THUMBNAIL_DIR3 = path9.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
+var UPLOAD_DIR3 = path10.resolve(process.env.UPLOAD_DIR || "./data/uploads");
+var THUMBNAIL_DIR3 = path10.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
 router2.get("/", async (_req, res) => {
   try {
     const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
@@ -4305,6 +4384,67 @@ router2.get("/", async (_req, res) => {
   } catch (error) {
     console.error("\u83B7\u53D6\u6587\u4EF6\u5217\u8868\u5931\u8D25:", error);
     res.status(500).json({ error: "\u83B7\u53D6\u6587\u4EF6\u5217\u8868\u5931\u8D25" });
+  }
+});
+router2.post("/folders", async (req, res) => {
+  try {
+    const { folderName } = req.body;
+    if (!folderName || typeof folderName !== "string" || folderName.trim().length === 0) {
+      return res.status(400).json({ error: "\u6587\u4EF6\u5939\u540D\u79F0\u4E0D\u80FD\u4E3A\u7A7A" });
+    }
+    const trimmedName = folderName.trim();
+    if (/[\/\\:*?"<>|]/.test(trimmedName)) {
+      return res.status(400).json({ error: "\u6587\u4EF6\u5939\u540D\u5305\u542B\u975E\u6CD5\u5B57\u7B26" });
+    }
+    const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
+    const activeAccountId = storageManager2.getActiveAccountId();
+    const provider = storageManager2.getProvider();
+    let checkQuery = "";
+    let checkParams = [];
+    if (provider.name === "local") {
+      checkQuery = "SELECT COUNT(*)::int as cnt FROM files WHERE source = 'local' AND folder = $1";
+      checkParams = [trimmedName];
+    } else {
+      checkQuery = "SELECT COUNT(*)::int as cnt FROM files WHERE storage_account_id = $1 AND folder = $2";
+      checkParams = [activeAccountId, trimmedName];
+    }
+    const checkResult = await query(checkQuery, checkParams);
+    if (checkResult.rows[0].cnt > 0) {
+      return res.status(400).json({ error: "\u8BE5\u6587\u4EF6\u5939\u5DF2\u5B58\u5728" });
+    }
+    const insertQuery = `
+            INSERT INTO files (
+                name, stored_name, type, mime_type, size, 
+                path, source, folder, storage_account_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+        `;
+    const source = provider.name === "local" ? "local" : provider.name;
+    const accountId = provider.name === "local" ? null : activeAccountId;
+    await query(insertQuery, [
+      ".folder",
+      // name
+      ".folder",
+      // stored_name  
+      "other",
+      // type
+      "application/x-directory",
+      // mime_type
+      0,
+      // size
+      ".folder",
+      // path
+      source,
+      // source
+      trimmedName,
+      // folder
+      accountId
+      // storage_account_id
+    ]);
+    res.json({ success: true, folder: trimmedName });
+  } catch (error) {
+    console.error("\u521B\u5EFA\u7A7A\u6587\u4EF6\u5939\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u521B\u5EFA\u7A7A\u6587\u4EF6\u5939\u5931\u8D25" });
   }
 });
 router2.post("/folders/favorite", async (req, res) => {
@@ -4396,7 +4536,7 @@ router2.get("/:id([0-9a-fA-F-]{36})/preview", async (req, res) => {
         return res.status(500).json({ error: "\u83B7\u53D6\u9884\u89C8\u5931\u8D25" });
       }
     }
-    const filePath = file.path || path9.join(UPLOAD_DIR3, file.stored_name);
+    const filePath = file.path || path10.join(UPLOAD_DIR3, file.stored_name);
     if (!fs9.existsSync(filePath)) {
       return res.status(404).json({ error: "\u6587\u4EF6\u4E0D\u5B58\u5728\u4E8E\u670D\u52A1\u5668" });
     }
@@ -4490,7 +4630,7 @@ router2.get("/:id([0-9a-fA-F-]{36})/download", async (req, res) => {
         return res.status(500).json({ error: "\u65E0\u6CD5\u4E0B\u8F7D\u6587\u4EF6" });
       }
     }
-    const filePath = file.path || path9.join(UPLOAD_DIR3, file.stored_name);
+    const filePath = file.path || path10.join(UPLOAD_DIR3, file.stored_name);
     console.log(`[Download] Serving local file: ${filePath}`);
     if (!fs9.existsSync(filePath)) {
       console.log(`[Download] File system path not found: ${filePath}`);
@@ -4517,7 +4657,7 @@ router2.get("/:id([0-9a-fA-F-]{36})/thumbnail", async (req, res) => {
     if (!file.thumbnail_path) {
       return res.status(404).json({ error: "\u65E0\u7F29\u7565\u56FE" });
     }
-    const thumbPath = path9.join(THUMBNAIL_DIR3, path9.basename(file.thumbnail_path));
+    const thumbPath = path10.join(THUMBNAIL_DIR3, path10.basename(file.thumbnail_path));
     if (!fs9.existsSync(thumbPath)) {
       return res.status(404).json({ error: "\u7F29\u7565\u56FE\u6587\u4EF6\u4E0D\u5B58\u5728" });
     }
@@ -4549,13 +4689,13 @@ router2.delete("/:id([0-9a-fA-F-]{36})", async (req, res) => {
         console.error(`${file.source} \u6587\u4EF6\u5220\u9664\u5931\u8D25 (\u53EF\u80FD\u5DF2\u4E0D\u5B58\u5728):`, err);
       }
     } else {
-      const filePath = file.path || path9.join(UPLOAD_DIR3, file.stored_name);
+      const filePath = file.path || path10.join(UPLOAD_DIR3, file.stored_name);
       if (fs9.existsSync(filePath)) {
         fs9.unlinkSync(filePath);
       }
     }
     if (file.thumbnail_path) {
-      const thumbPath = path9.join(THUMBNAIL_DIR3, path9.basename(file.thumbnail_path));
+      const thumbPath = path10.join(THUMBNAIL_DIR3, path10.basename(file.thumbnail_path));
       if (fs9.existsSync(thumbPath)) {
         fs9.unlinkSync(thumbPath);
       }
@@ -4596,13 +4736,13 @@ router2.post("/batch-delete", async (req, res) => {
           const provider = storageManager2.getProvider(`${file.source}:${file.storage_account_id}`);
           await provider.deleteFile(file.path);
         } else {
-          const filePath = file.path || path9.join(UPLOAD_DIR3, file.stored_name);
+          const filePath = file.path || path10.join(UPLOAD_DIR3, file.stored_name);
           if (fs9.existsSync(filePath)) {
             fs9.unlinkSync(filePath);
           }
         }
         if (file.thumbnail_path) {
-          const thumbPath = path9.join(THUMBNAIL_DIR3, path9.basename(file.thumbnail_path));
+          const thumbPath = path10.join(THUMBNAIL_DIR3, path10.basename(file.thumbnail_path));
           if (fs9.existsSync(thumbPath)) {
             fs9.unlinkSync(thumbPath);
           }
@@ -4702,6 +4842,53 @@ router2.patch("/rename-folder", async (req, res) => {
     res.status(500).json({ error: "\u91CD\u547D\u540D\u6587\u4EF6\u5939\u5931\u8D25" });
   }
 });
+router2.patch("/:id([0-9a-fA-F-]{36})/move", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { folder } = req.body;
+    if (folder !== null && typeof folder !== "string") {
+      return res.status(400).json({ error: "\u6587\u4EF6\u5939\u540D\u79F0\u683C\u5F0F\u9519\u8BEF" });
+    }
+    const trimmedFolder = folder ? folder.trim() : null;
+    if (trimmedFolder && /[\/\\:*?"<>|]/.test(trimmedFolder)) {
+      return res.status(400).json({ error: "\u6587\u4EF6\u5939\u540D\u5305\u542B\u975E\u6CD5\u5B57\u7B26" });
+    }
+    const result = await query("SELECT * FROM files WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "\u6587\u4EF6\u4E0D\u5B58\u5728" });
+    }
+    await query("UPDATE files SET folder = $1, updated_at = NOW() WHERE id = $2", [trimmedFolder, id]);
+    res.json({ success: true, folder: trimmedFolder });
+  } catch (error) {
+    console.error("\u79FB\u52A8\u6587\u4EF6\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u79FB\u52A8\u6587\u4EF6\u5931\u8D25" });
+  }
+});
+router2.patch("/move-folder", async (req, res) => {
+  try {
+    const { oldName, newName } = req.body;
+    if (!oldName || typeof oldName !== "string") {
+      return res.status(400).json({ error: "\u539F\u6587\u4EF6\u5939\u540D\u79F0\u4E0D\u80FD\u4E3A\u7A7A" });
+    }
+    if (newName !== null && typeof newName !== "string") {
+      return res.status(400).json({ error: "\u76EE\u6807\u6587\u4EF6\u5939\u540D\u79F0\u683C\u5F0F\u9519\u8BEF" });
+    }
+    const trimmedOld = oldName.trim();
+    const trimmedNew = newName ? newName.trim() : null;
+    if (trimmedNew && /[\/\\:*?"<>|]/.test(trimmedNew)) {
+      return res.status(400).json({ error: "\u76EE\u6807\u6587\u4EF6\u5939\u540D\u5305\u542B\u975E\u6CD5\u5B57\u7B26" });
+    }
+    const checkResult = await query("SELECT COUNT(*) as cnt FROM files WHERE folder = $1", [trimmedOld]);
+    if (parseInt(checkResult.rows[0].cnt) === 0) {
+      return res.status(404).json({ error: "\u539F\u6587\u4EF6\u5939\u4E0D\u5B58\u5728" });
+    }
+    await query("UPDATE files SET folder = $1, updated_at = NOW() WHERE folder = $2", [trimmedNew, trimmedOld]);
+    res.json({ success: true, folder: trimmedNew });
+  } catch (error) {
+    console.error("\u79FB\u52A8\u6587\u4EF6\u5939\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u79FB\u52A8\u6587\u4EF6\u5939\u5931\u8D25" });
+  }
+});
 router2.post("/:id([0-9a-fA-F-]{36})/share", async (req, res) => {
   try {
     const { id } = req.params;
@@ -4779,8 +4966,8 @@ var files_default = router2;
 init_db();
 import { Router as Router3 } from "express";
 import multer from "multer";
-import { v4 as uuidv43 } from "uuid";
-import path10 from "path";
+import { v4 as uuidv4 } from "uuid";
+import path11 from "path";
 import fs10 from "fs";
 
 // src/middleware/apiKey.ts
@@ -4838,7 +5025,7 @@ function decodeFilename(filename) {
   }
   return filename;
 }
-var TEMP_DIR = path10.join(process.cwd(), "data", "temp");
+var TEMP_DIR = path11.join(process.cwd(), "data", "temp");
 if (!fs10.existsSync(TEMP_DIR)) {
   fs10.mkdirSync(TEMP_DIR, { recursive: true });
 }
@@ -4847,8 +5034,8 @@ var storage = multer.diskStorage({
     cb(null, TEMP_DIR);
   },
   filename: (_req, file, cb) => {
-    const ext = path10.extname(file.originalname);
-    const storedName = `${uuidv43()}${ext}`;
+    const ext = path11.extname(file.originalname);
+    const storedName = `${uuidv4()}${ext}`;
     cb(null, storedName);
   }
 });
@@ -4868,13 +5055,13 @@ var handleUpload = async (req, res, source = "web") => {
   const originalName = decodeFilename(file.originalname);
   const mimeType = file.mimetype;
   const size = file.size;
-  const tempPath = path10.resolve(file.path);
-  const storedName = file.filename;
+  const tempPath = path11.resolve(file.path);
+  const activeAccountId = storageManager.getActiveAccountId();
+  const storedName = await getUniqueStoredName(originalName, folder || null, activeAccountId);
   console.log(`[Upload] \u{1F4C1} Received file: ${originalName} (${mimeType}, ${size} bytes)`);
   console.log(`[Upload] \u{1F3E0} Local temp path: ${tempPath}`);
   try {
     const provider = storageManager.getProvider();
-    const activeAccountId = storageManager.getActiveAccountId();
     console.log(`[Upload] \u{1F6E0}\uFE0F  Current storage provider: ${provider.name}, activeAccountId: ${activeAccountId || "none (local)"}`);
     let thumbnailPath = null;
     let width = null;
@@ -4883,7 +5070,7 @@ var handleUpload = async (req, res, source = "web") => {
       try {
         const thumbResult = await generateThumbnail(tempPath, storedName, mimeType);
         if (thumbResult) {
-          thumbnailPath = path10.basename(thumbResult);
+          thumbnailPath = path11.basename(thumbResult);
           console.log(`[Upload] \u2728 Thumbnail generated: ${thumbnailPath}`);
           const dims = await getImageDimensions(tempPath, mimeType);
           width = dims.width;
@@ -4954,7 +5141,7 @@ init_db();
 import { Router as Router4 } from "express";
 import checkDiskSpaceModule2 from "check-disk-space";
 import os3 from "os";
-import path11 from "path";
+import path12 from "path";
 import axios3 from "axios";
 var checkDiskSpace2 = checkDiskSpaceModule2.default || checkDiskSpaceModule2;
 var router4 = Router4();
@@ -4979,7 +5166,7 @@ function getGoogleDriveRedirectUri(req) {
 }
 router4.get("/stats", requireAuth, async (_req, res) => {
   try {
-    const diskPath = os3.platform() === "win32" ? "C:" : path11.resolve(UPLOAD_DIR4);
+    const diskPath = os3.platform() === "win32" ? "C:" : path12.resolve(UPLOAD_DIR4);
     const diskSpace = await checkDiskSpace2(diskPath);
     const result = await query(`
             SELECT 
@@ -5061,7 +5248,7 @@ router4.get("/config", requireAuth, async (req, res) => {
 });
 router4.post("/config/onedrive/auth-url", requireAuth, async (req, res) => {
   try {
-    const { clientId, tenantId, redirectUri, clientSecret } = req.body;
+    const { clientId, tenantId, redirectUri, clientSecret, name } = req.body;
     if (!clientId || !redirectUri) {
       return res.status(400).json({ error: "\u7F3A\u5C11 Client ID \u6216 Redirect URI" });
     }
@@ -5074,6 +5261,9 @@ router4.post("/config/onedrive/auth-url", requireAuth, async (req, res) => {
     }
     await StorageManager2.updateSetting("onedrive_client_id", clientId);
     await StorageManager2.updateSetting("onedrive_tenant_id", tenantId || "common");
+    if (name) {
+      await StorageManager2.updateSetting("onedrive_pending_name", name);
+    }
     res.json({ authUrl });
   } catch (error) {
     console.error("\u83B7\u53D6\u6388\u6743 URL \u5931\u8D25:", error);
@@ -5154,7 +5344,7 @@ router4.get("/onedrive/callback", async (req, res) => {
 });
 router4.post("/config/google-drive/auth-url", requireAuth, async (req, res) => {
   try {
-    const { clientId, clientSecret, redirectUri } = req.body;
+    const { clientId, clientSecret, redirectUri, name } = req.body;
     if (!clientId || !clientSecret || !redirectUri) {
       return res.status(400).json({ error: "\u7F3A\u5C11\u5FC5\u8981\u53C2\u6570 (Client ID, Client Secret \u6216 Redirect URI)" });
     }
@@ -5163,6 +5353,9 @@ router4.post("/config/google-drive/auth-url", requireAuth, async (req, res) => {
     await StorageManager2.updateSetting("google_drive_client_id", clientId);
     await StorageManager2.updateSetting("google_drive_client_secret", clientSecret);
     await StorageManager2.updateSetting("google_drive_redirect_uri", redirectUri);
+    if (name) {
+      await StorageManager2.updateSetting("google_drive_pending_name", name);
+    }
     res.json({ authUrl });
   } catch (error) {
     console.error("\u83B7\u53D6 Google Drive \u6388\u6743 URL \u5931\u8D25:", error);
@@ -5189,7 +5382,9 @@ router4.get("/google-drive/callback", async (req, res) => {
     if (!tokens.refresh_token) {
       return res.send("\u6388\u6743\u5931\u8D25\uFF1A\u672A\u83B7\u5F97 Refresh Token\u3002\u8BF7\u786E\u4FDD\u662F\u9996\u6B21\u6388\u6743\uFF0C\u6216\u5728 Google \u63A7\u5236\u53F0\u4E2D\u64A4\u9500\u6743\u9650\u540E\u91CD\u8BD5\u3002");
     }
-    await storageManager2.addGoogleDriveAccount("Google Drive Account", clientId, clientSecret, tokens.refresh_token, redirectUri);
+    const pendingName = await storageManager2.getSetting("google_drive_pending_name");
+    await storageManager2.updateSetting("google_drive_pending_name", "");
+    await storageManager2.addGoogleDriveAccount(pendingName || "Google Drive Account", clientId, clientSecret, tokens.refresh_token, redirectUri);
     const accounts = await storageManager2.getAccounts();
     const newAccount = accounts.filter((a) => a.type === "google_drive").sort((a, b) => b.created_at - a.created_at)[0];
     if (newAccount) {
@@ -5341,8 +5536,8 @@ var storage_default = router4;
 // src/routes/chunkedUpload.ts
 init_db();
 import { Router as Router5 } from "express";
-import { v4 as uuidv44 } from "uuid";
-import path12 from "path";
+import { v4 as uuidv42 } from "uuid";
+import path13 from "path";
 import fs11 from "fs";
 init_storage();
 var router5 = Router5();
@@ -5359,7 +5554,7 @@ setInterval(() => {
   const now = /* @__PURE__ */ new Date();
   uploadSessions.forEach((session, uploadId) => {
     if (now.getTime() - session.createdAt.getTime() > 24 * 60 * 60 * 1e3) {
-      const chunkDir = path12.join(CHUNK_DIR, uploadId);
+      const chunkDir = path13.join(CHUNK_DIR, uploadId);
       if (fs11.existsSync(chunkDir)) {
         fs11.rmSync(chunkDir, { recursive: true });
       }
@@ -5391,8 +5586,8 @@ router5.post("/init", (req, res) => {
     if (!filename || !totalChunks || !mimeType || !totalSize) {
       return res.status(400).json({ error: "\u7F3A\u5C11\u5FC5\u8981\u53C2\u6570" });
     }
-    const uploadId = uuidv44();
-    const chunkDir = path12.join(CHUNK_DIR, uploadId);
+    const uploadId = uuidv42();
+    const chunkDir = path13.join(CHUNK_DIR, uploadId);
     fs11.mkdirSync(chunkDir, { recursive: true });
     uploadSessions.set(uploadId, {
       uploadId,
@@ -5427,7 +5622,7 @@ router5.post("/chunk", async (req, res) => {
     if (!session) {
       return res.status(404).json({ error: "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u5B58\u5728\u6216\u5DF2\u8FC7\u671F" });
     }
-    const chunkPath = path12.join(CHUNK_DIR, uploadId, `chunk_${chunkIndex}`);
+    const chunkPath = path13.join(CHUNK_DIR, uploadId, `chunk_${chunkIndex}`);
     const writeStream = fs11.createWriteStream(chunkPath);
     await new Promise((resolve, reject) => {
       req.pipe(writeStream);
@@ -5468,14 +5663,14 @@ router5.post("/complete", async (req, res) => {
         totalChunks: session.totalChunks
       });
     }
-    const ext = path12.extname(session.filename);
-    const storedName = `${uuidv44()}${ext}`;
-    const finalPath = path12.resolve(path12.join(UPLOAD_DIR5, storedName));
+    const activeAccountId = storageManager.getActiveAccountId();
+    const storedName = await getUniqueStoredName(session.filename, session.folder || null, activeAccountId);
+    const finalPath = path13.resolve(path13.join(UPLOAD_DIR5, storedName));
     const writeStream = fs11.createWriteStream(finalPath);
     console.log(`[ChunkedComplete] \u{1F9E9} Merging ${session.totalChunks} chunks for: ${session.filename}`);
     console.log(`[ChunkedComplete] \u{1F3E0} Final temp path: ${finalPath}`);
     for (let i = 0; i < session.totalChunks; i++) {
-      const chunkPath = path12.join(CHUNK_DIR, uploadId, `chunk_${i}`);
+      const chunkPath = path13.join(CHUNK_DIR, uploadId, `chunk_${i}`);
       const chunkData = fs11.readFileSync(chunkPath);
       writeStream.write(chunkData);
     }
@@ -5484,7 +5679,7 @@ router5.post("/complete", async (req, res) => {
       writeStream.on("finish", resolve);
       writeStream.on("error", reject);
     });
-    const chunkDir = path12.join(CHUNK_DIR, uploadId);
+    const chunkDir = path13.join(CHUNK_DIR, uploadId);
     fs11.rmSync(chunkDir, { recursive: true });
     uploadSessions.delete(uploadId);
     let thumbnailPath = null;
@@ -5495,7 +5690,7 @@ router5.post("/complete", async (req, res) => {
         console.log(`[ChunkedComplete] \u{1F5BC}\uFE0F  MIME: ${session.mimeType}, starting generation...`);
         const thumbResult = await generateThumbnail(finalPath, storedName, session.mimeType);
         if (thumbResult) {
-          thumbnailPath = path12.basename(thumbResult);
+          thumbnailPath = path13.basename(thumbResult);
           console.log(`[ChunkedComplete] \u2728 Thumbnail generated: ${thumbnailPath}`);
           const dims = await getImageDimensions(finalPath, session.mimeType);
           width = dims.width;
@@ -5509,7 +5704,6 @@ router5.post("/complete", async (req, res) => {
     }
     let storedPath = "";
     const provider = storageManager.getProvider();
-    const activeAccountId = storageManager.getActiveAccountId();
     console.log(`[ChunkedComplete] \u{1F6E0}\uFE0F  Provider: ${provider.name}, accountId: ${activeAccountId || "none (local)"}`);
     try {
       storedPath = await provider.saveFile(finalPath, storedName, session.mimeType);
@@ -5555,7 +5749,7 @@ router5.delete("/:uploadId", (req, res) => {
     const uploadId = req.params.uploadId;
     const session = uploadSessions.get(uploadId);
     if (session) {
-      const chunkDir = path12.join(CHUNK_DIR, uploadId);
+      const chunkDir = path13.join(CHUNK_DIR, uploadId);
       if (fs11.existsSync(chunkDir)) {
         fs11.rmSync(chunkDir, { recursive: true });
       }
@@ -5633,7 +5827,7 @@ app.use("/thumbnails", requireAuth, express.static(THUMBNAIL_DIR5, {
 }));
 app.use("/api/files", requireAuthOrSignedUrl, files_default);
 app.use("/api/upload", requireAuth, upload_default);
-app.use("/api/v1/upload", upload_default);
+app.use("/api/v1/upload", requireAuth, upload_default);
 app.use("/api/chunked", requireAuth, chunkedUpload_default);
 app.use("/api/storage", storage_default);
 app.get("/health", (_req, res) => {
@@ -5658,8 +5852,8 @@ app.listen(PORT, async () => {
   console.log(`
 \u{1F680} FoomClous \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
 \u{1F4CD} \u7AEF\u53E3: ${PORT}
-\u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path13.resolve(UPLOAD_DIR6)}
-\u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path13.resolve(THUMBNAIL_DIR5)}
+\u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path14.resolve(UPLOAD_DIR6)}
+\u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path14.resolve(THUMBNAIL_DIR5)}
 \u{1F510} \u5BC6\u7801\u4FDD\u62A4: ${passwordProtected ? "\u5DF2\u542F\u7528" : "\u672A\u542F\u7528"}
 \u{1F916} Telegram Bot: ${telegramEnabled ? "\u5DF2\u542F\u7528 (\u652F\u63012GB\u6587\u4EF6)" : "\u672A\u542F\u7528"}
     `);
