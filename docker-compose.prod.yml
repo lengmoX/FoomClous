@@ -13,6 +13,8 @@ services:
     image: foomclous-backend:latest
     ports:
       - "51947:51947"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - DATABASE_URL=postgresql://foomclous:${DB_PASSWORD}@postgres:5432/foomclous
       - PORT=${PORT:-51947}

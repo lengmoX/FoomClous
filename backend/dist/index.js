@@ -343,6 +343,24 @@ var init_storage = __esm({
       }
       name = "webdav";
       client;
+      isRunningInDocker() {
+        return fs2.existsSync("/.dockerenv");
+      }
+      buildConnectionHelp(error) {
+        const errorMessage = error?.message || "";
+        const targetUrl = this.url || "";
+        try {
+          const parsedUrl = new URL(targetUrl);
+          const hostname = parsedUrl.hostname.toLowerCase();
+          const isLoopbackHost = hostname === "127.0.0.1" || hostname === "localhost";
+          const isConnectionRefused = error?.code === "ECONNREFUSED" || /ECONNREFUSED/i.test(errorMessage);
+          if (this.isRunningInDocker() && isLoopbackHost && isConnectionRefused) {
+            return " \u5F53\u524D\u540E\u7AEF\u8FD0\u884C\u5728 Docker \u5BB9\u5668\u5185\uFF0C127.0.0.1/localhost \u6307\u5411\u7684\u662F\u5BB9\u5668\u81EA\u8EAB\uFF0C\u4E0D\u662F\u5BBF\u4E3B\u673A\u3002\u82E5 OpenList \u8FD0\u884C\u5728\u5BBF\u4E3B\u673A\uFF0C\u8BF7\u5C06 WebDAV \u5730\u5740\u6539\u4E3A http://host.docker.internal:5244/dav\uFF08\u6216\u5BBF\u4E3B\u673A\u5B9E\u9645\u5185\u7F51 IP\uFF09\uFF0C\u5E76\u786E\u8BA4\u5BBF\u4E3B\u673A\u4E0A\u7684 OpenList \u76D1\u542C\u5728 0.0.0.0 \u6216\u5B9E\u9645\u7F51\u5361\u5730\u5740\u3002";
+          }
+        } catch {
+        }
+        return "";
+      }
       async saveFile(tempPath, fileName, _mimeType) {
         let fileStream = null;
         try {
@@ -357,8 +375,9 @@ var init_storage = __esm({
           console.log("[WebDAV] Upload successful:", fileName);
           return fileName;
         } catch (error) {
-          console.error("[WebDAV] Upload failed:", error.message);
-          throw new Error(`WebDAV upload failed: ${error.message}`);
+          const help = this.buildConnectionHelp(error);
+          console.error("[WebDAV] Upload failed:", `${error.message}${help}`);
+          throw new Error(`WebDAV upload failed: ${error.message}${help}`);
         } finally {
           if (fileStream && !fileStream.destroyed) {
             fileStream.destroy();

@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: foomclous-postgres
+    environment:
+      POSTGRES_DB: foomclous
+      POSTGRES_USER: foomclous
+      POSTGRES_PASSWORD: your_strong_password_here
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./.docker-data/postgres:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U foomclous -d foomclous"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped

@@ -1,0 +1,4 @@
+interface:
+  display_name: "FoomClous"
+  short_description: "Analyze and modify FoomClous safely"
+  default_prompt: "Use $foomclous to analyze FoomClous architecture, storage flows, and known bugs before making changes."

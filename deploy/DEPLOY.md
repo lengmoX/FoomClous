@@ -160,6 +160,9 @@ docker compose logs -f postgres   # 数据库日志
 docker compose restart
 docker compose restart backend    # 重启后端
 
+# 仅重建后端（修改 compose 或后端镜像后常用）
+docker compose up -d --build backend
+
 # 停止服务
 docker compose down
 
@@ -196,6 +199,33 @@ docker run --rm -v foomclous_file-storage:/data -v $(pwd):/backup alpine tar czv
 # 检查后端是否运行
 docker compose ps
 docker compose logs backend
+```
+
+### Docker 后端访问宿主机 OpenList
+如果：
+
+- FoomClous backend 跑在 Docker 容器里
+- OpenList 跑在宿主机 systemd/service
+
+则 WebDAV 地址**不要**写成 `http://127.0.0.1:5244/dav`，因为容器内的 `127.0.0.1` 指向容器自己。
+
+本项目的 Compose 已默认加入：
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+因此推荐在 FoomClous 后台将 WebDAV 地址配置为：
+
+```text
+http://host.docker.internal:5244/dav
+```
+
+若要验证容器是否能访问宿主机 OpenList，可执行：
+
+```bash
+docker compose exec backend sh -lc "wget -S -O- http://host.docker.internal:5244 2>&1 | head"
 ```
 
 ### SSL 证书问题

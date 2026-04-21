@@ -197,6 +197,34 @@ FoomClous 已内置支持 TOTP 双重验证（如 Google Authenticator）。
 > [!CAUTION]
 > 开启 HTTPS 后，`.env` 中的所有 URL 必须以 `https://` 开头，否则浏览器会拦截资源。
 
+## 🌐 WebDAV / OpenList（宿主机服务 + Docker 后端）说明
+
+如果你的 **FoomClous backend 运行在 Docker 容器内**，但 **OpenList 运行在宿主机 systemd/service**，请注意：
+
+- 不要把 WebDAV 地址填写成 `http://127.0.0.1:5244/dav`
+- 也不要填写 `http://localhost:5244/dav`
+
+原因是：`127.0.0.1` / `localhost` 在容器内指向的是**容器自己**，不是宿主机。
+
+本仓库的 `docker-compose.yml` 与 `docker-compose.prod.yml` 已默认加入：
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+因此在 Linux Docker 环境下，推荐直接将 WebDAV 地址配置为：
+
+```text
+http://host.docker.internal:5244/dav
+```
+
+使用前请确认：
+
+1. 宿主机上的 OpenList 监听在 `0.0.0.0:5244` 或实际网卡地址，而不是仅监听 `127.0.0.1`
+2. OpenList / 前置 Nginx 的上传大小限制已放宽，例如 `client_max_body_size 2G;`
+3. 修改 Compose 后已重建并重启 backend 容器
+
 ## 📦 Docker 镜像说明
 
 > [!WARNING]

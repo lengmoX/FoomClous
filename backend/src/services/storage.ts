@@ -314,6 +314,30 @@ export class WebDAVStorageProvider implements IStorageProvider {
         });
     }
 
+    private isRunningInDocker(): boolean {
+        return fs.existsSync('/.dockerenv');
+    }
+
+    private buildConnectionHelp(error: any): string {
+        const errorMessage = error?.message || '';
+        const targetUrl = this.url || '';
+
+        try {
+            const parsedUrl = new URL(targetUrl);
+            const hostname = parsedUrl.hostname.toLowerCase();
+            const isLoopbackHost = hostname === '127.0.0.1' || hostname === 'localhost';
+            const isConnectionRefused = error?.code === 'ECONNREFUSED' || /ECONNREFUSED/i.test(errorMessage);
+
+            if (this.isRunningInDocker() && isLoopbackHost && isConnectionRefused) {
+                return ' 当前后端运行在 Docker 容器内，127.0.0.1/localhost 指向的是容器自身，不是宿主机。若 OpenList 运行在宿主机，请将 WebDAV 地址改为 http://host.docker.internal:5244/dav（或宿主机实际内网 IP），并确认宿主机上的 OpenList 监听在 0.0.0.0 或实际网卡地址。';
+            }
+        } catch {
+            // ignore invalid URL parse errors and fall back to the original message
+        }
+
+        return '';
+    }
+
     async saveFile(tempPath: string, fileName: string, _mimeType: string): Promise<string> {
         let fileStream: fs.ReadStream | null = null;
 
@@ -333,8 +357,9 @@ export class WebDAVStorageProvider implements IStorageProvider {
             console.log('[WebDAV] Upload successful:', fileName);
             return fileName;
         } catch (error: any) {
-            console.error('[WebDAV] Upload failed:', error.message);
-            throw new Error(`WebDAV upload failed: ${error.message}`);
+            const help = this.buildConnectionHelp(error);
+            console.error('[WebDAV] Upload failed:', `${error.message}${help}`);
+            throw new Error(`WebDAV upload failed: ${error.message}${help}`);
         } finally {
             if (fileStream && !fileStream.destroyed) {
                 fileStream.destroy();

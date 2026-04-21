@@ -1452,7 +1452,9 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                         <span>WebDAV 凭证信息</span>
                                     </div>
                                     <p className="text-xs text-muted-foreground leading-relaxed">
-                                        请提供您的 WebDAV 服务器地址及登录凭证。
+                                        请提供您的 WebDAV 服务器地址及登录凭证。若后端运行在 Docker 容器内、OpenList 运行在宿主机，请填写
+                                        <code className="mx-1 rounded bg-background px-1.5 py-0.5 text-[11px]">http://host.docker.internal:5244/dav</code>
+                                        ，不要填写 <code className="mx-1 rounded bg-background px-1.5 py-0.5 text-[11px]">127.0.0.1</code> 或 <code className="mx-1 rounded bg-background px-1.5 py-0.5 text-[11px]">localhost</code>。
                                     </p>
                                 </div>
 
@@ -1474,7 +1476,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                             value={webdavUrl}
                                             onChange={e => setWebdavUrl(e.target.value)}
                                             className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                            placeholder="https://dav.jianguoyun.com/dav/"
+                                            placeholder="https://dav.jianguoyun.com/dav/ 或 http://host.docker.internal:5244/dav"
                                         />
                                     </div>
                                     <div className="space-y-2">
