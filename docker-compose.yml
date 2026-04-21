@@ -10,7 +10,7 @@ services:
         - VITE_API_URL=${VITE_API_URL:-https://api.example.com}
     container_name: foomclous-frontend
     ports:
-      - "47832:80"
+      - "127.0.0.1:47832:80"
     networks:
       - foomclous-network
     restart: unless-stopped
@@ -21,7 +21,7 @@ services:
     build: ./backend
     container_name: foomclous-backend
     ports:
-      - "51947:51947"
+      - "127.0.0.1:51947:51947"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

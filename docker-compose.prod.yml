@@ -5,14 +5,14 @@ services:
     # 使用本地构建的镜像 (需要先运行 docker build)
     image: foomclous-frontend:latest
     ports:
-      - "47832:80"
+      - "127.0.0.1:47832:80"
     restart: unless-stopped
 
   backend:
     # 使用本地构建的镜像 (需要先运行 docker build)
     image: foomclous-backend:latest
     ports:
-      - "51947:51947"
+      - "127.0.0.1:51947:51947"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
